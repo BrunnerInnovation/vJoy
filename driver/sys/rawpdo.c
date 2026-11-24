@@ -1104,6 +1104,7 @@ VOID vJoy_EvtDeviceFileCreate(
     PDEVICE_EXTENSION    pDevContext = NULL;
     PRPDO_DEVICE_DATA	pPdoData = NULL;
     size_t len;
+    size_t nameChars;
     DWORD_PTR ProcessId;
 
     PAGED_CODE();
@@ -1124,12 +1125,27 @@ VOID vJoy_EvtDeviceFileCreate(
     status = RtlStringCchLengthW(VJOY_INTERFACE, 100, &len);
     if (!NT_SUCCESS(status))
         goto going_out;
-    status = RtlStringCchCopyNW(RefStr, 100, pName->Buffer+len+1, 4);	// Copy the numeric part of the string (000)
+
+    // The name is expected to be "\Device_NNN", but any process can open the
+    // raw PDO directly (e.g. via \\.\GLOBALROOT\Device\NNNNNNNN, or Cygwin's
+    // /proc/sys), in which case the name is empty and Buffer is NULL.
+    // Reject names that do not extend past the "\Device_" prefix, and never
+    // read beyond Length: UNICODE_STRING buffers need not be NUL-terminated.
+    nameChars = pName->Length / sizeof(WCHAR);
+    if (!pName->Buffer || nameChars <= len + 1)
+        goto going_out;
+    status = RtlStringCchCopyNW(RefStr, 100, pName->Buffer+len+1,		// Copy the numeric part of the string (000)
+        min(4, nameChars - (len + 1)));
     if (!NT_SUCCESS(status))
         goto going_out;
     RtlInitUnicodeString(&TmpUstr, RefStr);								// Convert "000" to UNICODE_STRING
     status = RtlUnicodeStringToInteger(&TmpUstr, 10, &id);				// Convert "000" to integer (0)
     if (!NT_SUCCESS(status))
+        goto going_out;
+
+    // Interfaces are Device_001 .. Device_016 (plus the general-purpose
+    // Device_000); anything larger would index past the per-device arrays.
+    if (id > VJOY_MAX_N_DEVICES)
         goto going_out;
 
     if (id>0) {
